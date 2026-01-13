@@ -1,0 +1,1959 @@
+{
+    "name": "Call Center Inbound - Retell Core",
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "retell-webhook",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          -528,
+          240
+        ],
+        "id": "d34c302e-7bee-4563-ba31-9f40139e4ea9",
+        "name": "Retell Webhook",
+        "webhookId": "retell-call-webhook"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ status: 'received', call_id: $json.body?.call_id || 'unknown' }) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          -320,
+          336
+        ],
+        "id": "0bd9dd03-aafc-46ee-805f-02d1d0cada86",
+        "name": "Respond OK"
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "strict",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.body?.event }}",
+                      "rightValue": "call.completed",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      },
+                      "id": "is-completed"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Completed"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "strict",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.body?.event }}",
+                      "rightValue": "call.started",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      },
+                      "id": "is-started"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Started"
+              }
+            ]
+          },
+          "options": {
+            "fallbackOutput": "extra",
+            "renameFallbackOutput": "Other"
+          }
+        },
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3.2,
+        "position": [
+          -320,
+          144
+        ],
+        "id": "680c2965-e3c2-495d-a585-672502bf34a2",
+        "name": "Event Router"
+      },
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          -80,
+          208
+        ],
+        "id": "d8ec186f-73ab-48ed-8f64-8e43beba7bc2",
+        "name": "Call Started (No Action)"
+      },
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          -80,
+          368
+        ],
+        "id": "138b12fd-2674-491e-86a2-73126a6e59f1",
+        "name": "Other Events (Log Only)"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// NORMALIZE RETELL WEBHOOK DATA\n// Converts Retell post-call webhook to standard format\n// ============================================================\n\nconst body = $input.first().json.body || $input.first().json;\n\n// Extract caller info\nconst caller = body.caller || {};\nlet phone = caller.phone || body.from_number || '';\n// Normalize phone format\nphone = phone.replace(/@s\\.whatsapp\\.net/g, '').replace(/^549/, '54').replace(/\\D/g, '');\n\n// Extract conversation data\nconst conversation = body.conversation || {};\nconst extractedData = body.extracted_data || {};\nconst aiMetadata = body.ai_metadata || {};\n\n// Return normalized data\nreturn {\n  // Source tracking\n  source: 'call',\n  channel: 'retell',\n  \n  // Call metadata\n  call_id: body.call_id || null,\n  agent_id: body.agent_id || null,\n  call_status: body.call_status || 'completed',\n  call_duration: body.call_duration_seconds || 0,\n  recording_url: body.recording_url || null,\n  timestamp: body.timestamp || new Date().toISOString(),\n  \n  // Caller info\n  phone: phone,\n  name: caller.name || null,\n  email: caller.email || null,\n  \n  // Conversation\n  language: conversation.language || 'es',\n  transcript: conversation.transcript || '',\n  summary: conversation.summary || '',\n  \n  // Extracted intent data\n  intent: extractedData.intent || null,\n  property_type: extractedData.property_type || null,\n  zone: extractedData.zone || null,\n  urgency: extractedData.urgency || 'normal',\n  retell_temperature: extractedData.lead_temperature || 'cold',\n  budget: extractedData.budget || null,\n  \n  // AI metadata\n  ai_model: aiMetadata.model || 'unknown',\n  ai_confidence: aiMetadata.confidence_score || 0,\n  \n  // Keep raw for debugging\n  _raw: body\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          -80,
+          48
+        ],
+        "id": "96cdb129-10e8-4987-adf1-a015da96d2b4",
+        "name": "Normalize Data"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// LEAD SCORING ENGINE\n// Calculates temperature (cold/warm/hot) and numeric score\n// ============================================================\n\nconst data = $input.first().json;\n\nlet score = 0;\nconst reasons = [];\n\n// ----- INTENT SCORING -----\nconst intent = (data.intent || '').toLowerCase();\nif (intent === 'compra' || intent === 'buy' || intent === 'purchase') {\n  score += 25;\n  reasons.push('Intent: Purchase (+25)');\n} else if (intent === 'alquiler' || intent === 'rent') {\n  score += 15;\n  reasons.push('Intent: Rent (+15)');\n} else if (intent === 'venta' || intent === 'sell') {\n  score += 20;\n  reasons.push('Intent: Sell property (+20)');\n}\n\n// ----- URGENCY SCORING -----\nconst urgency = (data.urgency || '').toLowerCase();\nif (urgency === 'alta' || urgency === 'high' || urgency === 'urgente') {\n  score += 25;\n  reasons.push('Urgency: High (+25)');\n} else if (urgency === 'media' || urgency === 'medium') {\n  score += 10;\n  reasons.push('Urgency: Medium (+10)');\n}\n\n// ----- DATA COMPLETENESS -----\nif (data.email) {\n  score += 10;\n  reasons.push('Has email (+10)');\n}\nif (data.name) {\n  score += 5;\n  reasons.push('Has name (+5)');\n}\nif (data.budget) {\n  score += 10;\n  reasons.push('Has budget (+10)');\n}\nif (data.zone) {\n  score += 5;\n  reasons.push('Has preferred zone (+5)');\n}\nif (data.property_type) {\n  score += 5;\n  reasons.push('Has property type (+5)');\n}\n\n// ----- CALL ENGAGEMENT -----\nconst duration = data.call_duration || 0;\nif (duration > 180) {\n  score += 15;\n  reasons.push('Long call >3min (+15)');\n} else if (duration > 60) {\n  score += 5;\n  reasons.push('Medium call >1min (+5)');\n}\n\n// ----- AI CONFIDENCE -----\nif (data.ai_confidence > 0.8) {\n  score += 5;\n  reasons.push('High AI confidence (+5)');\n}\n\n// ----- RETELL CLASSIFICATION BOOST -----\nconst retellTemp = (data.retell_temperature || '').toLowerCase();\nif (retellTemp === 'caliente' || retellTemp === 'hot') {\n  score += 10;\n  reasons.push('Retell: Hot (+10)');\n} else if (retellTemp === 'tibio' || retellTemp === 'warm') {\n  score += 5;\n  reasons.push('Retell: Warm (+5)');\n}\n\n// ----- DETERMINE TEMPERATURE -----\nlet temperature = 'cold';\nif (score >= 60) {\n  temperature = 'hot';\n} else if (score >= 30) {\n  temperature = 'warm';\n}\n\n// Cap score\nscore = Math.min(score, 100);\n\nreturn {\n  ...data,\n  score: score,\n  temperature: temperature,\n  scoring_reasons: reasons\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          144,
+          48
+        ],
+        "id": "eb6534a5-f2ff-42fd-a1e2-f585dc07da24",
+        "name": "Score Lead"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "-- Log the call interaction\nINSERT INTO interactions (\n  phone, channel, direction,\n  transcript, summary, recording_url,\n  call_duration_seconds, call_status,\n  intent_detected, temperature_at_interaction,\n  confidence_score, extracted_data\n)\nVALUES (\n  $1, 'retell', 'inbound',\n  $2, $3, $4,\n  $5, $6,\n  $7, $8,\n  $9, $10::jsonb\n)\nRETURNING id;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          368,
+          48
+        ],
+        "id": "14b0f7cf-1961-4d45-9712-370f293ec20a",
+        "name": "DB - Log Call"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "-- Upsert lead\nINSERT INTO leads (\n  phone, name, email, source, first_channel,\n  temperature, score, intent,\n  preferred_zones, budget_max,\n  total_interactions, last_interaction_at, first_seen_at\n)\nVALUES (\n  $1, $2, $3, 'call', 'retell',\n  $4, $5, $6,\n  CASE WHEN $7 IS NOT NULL THEN ARRAY[$7::TEXT] ELSE NULL END,\n  $8,\n  1, NOW(), NOW()\n)\nON CONFLICT (phone) DO UPDATE SET\n  name = COALESCE(EXCLUDED.name, leads.name),\n  email = COALESCE(EXCLUDED.email, leads.email),\n  temperature = CASE \n    WHEN EXCLUDED.score > leads.score THEN EXCLUDED.temperature \n    ELSE leads.temperature \n  END,\n  score = GREATEST(EXCLUDED.score, leads.score),\n  intent = COALESCE(EXCLUDED.intent, leads.intent),\n  preferred_zones = COALESCE(\n    CASE WHEN EXCLUDED.preferred_zones IS NOT NULL \n      THEN array_cat(leads.preferred_zones, EXCLUDED.preferred_zones)\n      ELSE leads.preferred_zones \n    END,\n    EXCLUDED.preferred_zones\n  ),\n  budget_max = COALESCE(EXCLUDED.budget_max, leads.budget_max),\n  total_interactions = leads.total_interactions + 1,\n  last_interaction_at = NOW(),\n  updated_at = NOW()\nRETURNING id, phone, name, email, temperature, score, crm_synced, crm_id;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          576,
+          48
+        ],
+        "id": "00beb94b-e84c-4d5d-9707-380812cce31c",
+        "name": "DB - Upsert Lead"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// PREPARE CRM PAYLOAD FOR GOHIGHLEVEL\n// ============================================================\n\nconst scored = $('Score Lead').first().json;\nconst dbLead = $input.first().json;\nconst interaction = $('DB - Log Call').first().json;\n\n// Build name parts\nconst nameParts = (scored.name || '').split(' ');\nconst firstName = nameParts[0] || '';\nconst lastName = nameParts.slice(1).join(' ') || '';\n\n// Build tags\nconst tags = [\n  `temperature:${scored.temperature}`,\n  `score:${scored.score}`,\n  scored.intent ? `intent:${scored.intent}` : null,\n  'source:retell-call'\n].filter(Boolean);\n\n// Build custom fields\nconst customFields = [\n  { key: 'lead_temperature', value: scored.temperature },\n  { key: 'lead_score', value: String(scored.score) },\n  { key: 'property_intent', value: scored.intent || 'unknown' },\n  { key: 'preferred_zone', value: scored.zone || '' },\n  { key: 'budget', value: scored.budget ? String(scored.budget) : '' },\n  { key: 'call_summary', value: (scored.summary || '').substring(0, 500) },\n  { key: 'last_interaction_date', value: new Date().toISOString().split('T')[0] }\n];\n\nreturn {\n  // Lead data\n  lead_id: dbLead.id,\n  phone: scored.phone,\n  temperature: scored.temperature,\n  score: scored.score,\n  existing_crm_id: dbLead.crm_id,\n  \n  // GHL payload\n  ghl: {\n    firstName: firstName,\n    lastName: lastName,\n    phone: scored.phone,\n    email: scored.email || '',\n    source: 'Retell AI Call',\n    tags: tags,\n    customFields: customFields\n  },\n  \n  // For notes\n  call_summary: scored.summary,\n  call_duration: scored.call_duration,\n  recording_url: scored.recording_url,\n  scoring_reasons: scored.scoring_reasons,\n  interaction_id: interaction.id\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          800,
+          48
+        ],
+        "id": "331c676b-0696-4745-8fb3-7383da084303",
+        "name": "Prepare CRM Payload"
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "strict",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.temperature }}",
+                      "rightValue": "hot",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      },
+                      "id": "is-hot"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Hot Lead"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "strict",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.temperature }}",
+                      "rightValue": "warm",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      },
+                      "id": "is-warm"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Warm Lead"
+              }
+            ]
+          },
+          "options": {
+            "fallbackOutput": "extra",
+            "renameFallbackOutput": "Cold Lead"
+          }
+        },
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3.2,
+        "position": [
+          1024,
+          32
+        ],
+        "id": "989de604-a7db-44c9-8c4b-3fc09f169088",
+        "name": "Route by Classification"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://services.leadconnectorhq.com/contacts/",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $json.ghl.firstName }}\",\n  \"lastName\": \"{{ $json.ghl.lastName }}\",\n  \"phone\": \"{{ $json.ghl.phone }}\",\n  \"email\": \"{{ $json.ghl.email }}\",\n  \"source\": \"{{ $json.ghl.source }}\",\n  \"tags\": {{ JSON.stringify($json.ghl.tags) }},\n  \"customFields\": {{ JSON.stringify($json.ghl.customFields) }}\n}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1232,
+          -160
+        ],
+        "id": "c2746bbb-8dda-4ac6-95c8-455b91915508",
+        "name": "GHL - Create/Update Contact (Hot)"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://services.leadconnectorhq.com/contacts/{{ $('Prepare CRM Payload').first().json.existing_crm_id || $json.body?.contact?.id }}/notes",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"body\": \"🔥 HOT LEAD - Retell Call\\n\\n📞 Duration: {{ $('Prepare CRM Payload').first().json.call_duration }}s\\n📊 Score: {{ $('Prepare CRM Payload').first().json.score }}/100\\n\\n📝 Summary:\\n{{ $('Prepare CRM Payload').first().json.call_summary }}\\n\\n🎯 Scoring Reasons:\\n{{ $('Prepare CRM Payload').first().json.scoring_reasons?.join('\\n') }}\\n\\n🎙️ Recording: {{ $('Prepare CRM Payload').first().json.recording_url || 'N/A' }}\"\n}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1440,
+          -160
+        ],
+        "id": "f01b2998-7804-41a7-9c0d-15f5f1a14c4e",
+        "name": "GHL - Add Note (Hot)"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://services.leadconnectorhq.com/contacts/{{ $('GHL - Create/Update Contact (Hot)').first().json.body?.contact?.id }}/tasks",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"title\": \"🔥 URGENT: Follow up HOT lead from Retell call\",\n  \"body\": \"Lead scored {{ $('Prepare CRM Payload').first().json.score }}/100. Call back immediately!\\n\\nSummary: {{ $('Prepare CRM Payload').first().json.call_summary?.substring(0, 200) }}\",\n  \"dueDate\": \"{{ new Date(Date.now() + 30 * 60 * 1000).toISOString() }}\",\n  \"completed\": false\n}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1664,
+          -160
+        ],
+        "id": "32ab077d-32ed-4f99-8290-e7e6406ef239",
+        "name": "GHL - Create Urgent Task (Hot)"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://services.leadconnectorhq.com/contacts/",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $json.ghl.firstName }}\",\n  \"lastName\": \"{{ $json.ghl.lastName }}\",\n  \"phone\": \"{{ $json.ghl.phone }}\",\n  \"email\": \"{{ $json.ghl.email }}\",\n  \"source\": \"{{ $json.ghl.source }}\",\n  \"tags\": {{ JSON.stringify($json.ghl.tags) }},\n  \"customFields\": {{ JSON.stringify($json.ghl.customFields) }}\n}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1280,
+          48
+        ],
+        "id": "7dd443c9-b89f-42f3-a0e7-a1af7f4f850b",
+        "name": "GHL - Create/Update Contact (Warm)"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.body?.contact?.id }}/notes",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"body\": \"🌡️ WARM LEAD - Retell Call\\n\\n📞 Duration: {{ $('Prepare CRM Payload').first().json.call_duration }}s\\n📊 Score: {{ $('Prepare CRM Payload').first().json.score }}/100\\n\\n📝 Summary:\\n{{ $('Prepare CRM Payload').first().json.call_summary }}\\n\\n🎙️ Recording: {{ $('Prepare CRM Payload').first().json.recording_url || 'N/A' }}\"\n}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1520,
+          48
+        ],
+        "id": "c23a8e7d-6e73-40ce-9ed7-c5c05fd01402",
+        "name": "GHL - Add Note (Warm)"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://services.leadconnectorhq.com/contacts/",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $json.ghl.firstName }}\",\n  \"lastName\": \"{{ $json.ghl.lastName }}\",\n  \"phone\": \"{{ $json.ghl.phone }}\",\n  \"email\": \"{{ $json.ghl.email }}\",\n  \"source\": \"{{ $json.ghl.source }}\",\n  \"tags\": {{ JSON.stringify($json.ghl.tags) }},\n  \"customFields\": {{ JSON.stringify($json.ghl.customFields) }}\n}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1280,
+          240
+        ],
+        "id": "74d56900-7406-40b9-98b4-22bc787043a2",
+        "name": "GHL - Create/Update Contact (Cold)"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.body?.contact?.id }}/notes",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"body\": \"❄️ COLD LEAD - Retell Call\\n\\n📞 Duration: {{ $('Prepare CRM Payload').first().json.call_duration }}s\\n📊 Score: {{ $('Prepare CRM Payload').first().json.score }}/100\\n\\n📝 Summary:\\n{{ $('Prepare CRM Payload').first().json.call_summary }}\\n\\n🎙️ Recording: {{ $('Prepare CRM Payload').first().json.recording_url || 'N/A' }}\"\n}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1520,
+          240
+        ],
+        "id": "f7018397-7ac6-4d03-9813-165a7b12df14",
+        "name": "GHL - Add Note (Cold)"
+      },
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 3.1,
+        "position": [
+          1824,
+          32
+        ],
+        "id": "22969d2a-fdd4-43e1-bd88-7be663d322d8",
+        "name": "Merge CRM Results"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "-- Update lead with CRM ID\nUPDATE leads \nSET crm_synced = TRUE,\n    crm_id = $2,\n    crm_sync_at = NOW()\nWHERE id = $1;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          2000,
+          32
+        ],
+        "id": "ab3241b9-b9a8-4bf1-a6e7-60ee4527f181",
+        "name": "DB - Update CRM Sync"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "whatsapp-evolution",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          -672,
+          1248
+        ],
+        "id": "c02538aa-db87-460d-857e-2c8fef368ed1",
+        "name": "WhatsApp Webhook",
+        "webhookId": "whatsapp-evolution-webhook"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.body?.event }}",
+                "rightValue": "messages.upsert",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                },
+                "id": "is-message"
+              },
+              {
+                "leftValue": "={{ $json.body?.data?.key?.fromMe }}",
+                "rightValue": false,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                },
+                "id": "not-from-me"
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.filter",
+        "typeVersion": 2.2,
+        "position": [
+          -448,
+          1248
+        ],
+        "id": "3ab9fa52-9dd7-4187-9757-80df27c3b664",
+        "name": "Incoming Messages Only"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// NORMALIZE EVOLUTION API MESSAGE\n// ============================================================\n\nconst body = $input.first().json.body;\nconst data = body.data || {};\nconst message = data.message || {};\n\n// Determine content type and extract content\nlet contentType = 'unknown';\nlet content = '';\n\nif (message.conversation) {\n  contentType = 'text';\n  content = message.conversation;\n} else if (message.extendedTextMessage?.text) {\n  contentType = 'text';\n  content = message.extendedTextMessage.text;\n} else if (message.audioMessage) {\n  contentType = 'audio';\n} else if (message.imageMessage) {\n  contentType = 'image';\n  content = message.imageMessage.caption || '';\n}\n\n// Normalize phone\nlet phone = data.key?.remoteJid || '';\nphone = phone.replace('@s.whatsapp.net', '').replace(/^549/, '54');\n\nreturn {\n  // Instance info (for sending responses)\n  instance: {\n    server_url: body.server_url,\n    instance_name: body.instance,\n    apikey: body.apikey\n  },\n  \n  // Message details\n  message: {\n    id: data.key?.id,\n    phone: phone,\n    raw_jid: data.key?.remoteJid,\n    content_type: contentType,\n    content: content,\n    timestamp: body.date_time || new Date().toISOString()\n  },\n  \n  // User info\n  user: {\n    phone: phone,\n    name: data.pushName || null\n  },\n  \n  source: 'whatsapp',\n  channel: 'evolution'\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          -224,
+          1248
+        ],
+        "id": "5fca34cf-06d8-4010-8042-df4e9f048238",
+        "name": "Normalize Message"
+      },
+      {
+        "parameters": {
+          "operation": "push",
+          "list": "={{ $json.message.phone }}_wsp_buffer",
+          "messageData": "={{ JSON.stringify($json) }}",
+          "tail": true
+        },
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          -16,
+          1248
+        ],
+        "id": "79f68a82-487c-4a4f-84ba-0c429fef2d4d",
+        "name": "Push to Buffer"
+      },
+      {
+        "parameters": {
+          "operation": "get",
+          "propertyName": "buffer_messages",
+          "key": "={{ $('Normalize Message').first().json.message.phone }}_wsp_buffer",
+          "options": {
+            "dotNotation": false
+          }
+        },
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          208,
+          1248
+        ],
+        "id": "79cf59ca-0dfa-4bad-bf02-efbdaf72f656",
+        "name": "Get Buffer",
+        "alwaysOutputData": true
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ JSON.parse($json.buffer_messages?.at(-1) || '{\"message\":{\"id\":\"\"}}').message?.id }}",
+                      "rightValue": "={{ $('Normalize Message').first().json.message.id }}",
+                      "operator": {
+                        "type": "string",
+                        "operation": "notEquals"
+                      },
+                      "id": "not-last"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Discard"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ new Date(JSON.parse($json.buffer_messages?.at(-1) || '{\"message\":{\"timestamp\":\"2000-01-01\"}}').message?.timestamp).getTime() + 2000 }}",
+                      "rightValue": "={{ Date.now() }}",
+                      "operator": {
+                        "type": "number",
+                        "operation": "lt"
+                      },
+                      "id": "time-passed"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Process"
+              }
+            ]
+          },
+          "options": {
+            "fallbackOutput": "extra",
+            "renameFallbackOutput": "Wait"
+          }
+        },
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3.2,
+        "position": [
+          432,
+          1232
+        ],
+        "id": "18fa9a6b-14af-4bc9-aaeb-2b0d36225877",
+        "name": "Debounce Check"
+      },
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          672,
+          1056
+        ],
+        "id": "d419cf37-e604-44aa-88c7-130995065f11",
+        "name": "Discard (Duplicate)"
+      },
+      {
+        "parameters": {
+          "amount": 2
+        },
+        "type": "n8n-nodes-base.wait",
+        "typeVersion": 1.1,
+        "position": [
+          672,
+          1440
+        ],
+        "id": "05c9f6b5-a17d-4ade-b102-de6dbe5eefb9",
+        "name": "Wait 2s",
+        "webhookId": "wait-debounce-wsp"
+      },
+      {
+        "parameters": {
+          "operation": "delete",
+          "key": "={{ $('Normalize Message').first().json.message.phone }}_wsp_buffer"
+        },
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          672,
+          1248
+        ],
+        "id": "e11ee2ef-99bc-4d1d-b725-51604367c11f",
+        "name": "Clear Buffer"
+      },
+      {
+        "parameters": {
+          "fieldToSplitOut": "buffer_messages",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.splitOut",
+        "typeVersion": 1,
+        "position": [
+          896,
+          1248
+        ],
+        "id": "b292f338-ba1f-4978-98ec-57227d5452ad",
+        "name": "Split Messages"
+      },
+      {
+        "parameters": {
+          "mode": "raw",
+          "jsonOutput": "={{ JSON.parse($json.buffer_messages) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          1104,
+          1248
+        ],
+        "id": "e9120171-064a-496f-8ca4-de48de801004",
+        "name": "Parse JSON"
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "strict",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.message?.content_type }}",
+                      "rightValue": "audio",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      },
+                      "id": "is-audio"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Audio"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "strict",
+                    "version": 2
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.message?.content_type }}",
+                      "rightValue": "text",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      },
+                      "id": "is-text"
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Text"
+              }
+            ]
+          },
+          "options": {
+            "fallbackOutput": "extra",
+            "renameFallbackOutput": "Other"
+          }
+        },
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3.2,
+        "position": [
+          1328,
+          1232
+        ],
+        "id": "a1a458e5-eab4-4834-b926-c265cdf744c7",
+        "name": "Content Type?"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.instance.server_url }}/chat/getBase64FromMediaMessage/{{ $json.instance.instance_name }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "apikey",
+                "value": "={{ $json.instance.apikey }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "message.key.id",
+                "value": "={{ $json.message.id }}"
+              },
+              {
+                "name": "convertToMp4",
+                "value": "={{ Boolean(false) }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1568,
+          1056
+        ],
+        "id": "b65486d0-87ff-454c-84e6-0f2a045fabf6",
+        "name": "Get Audio File"
+      },
+      {
+        "parameters": {
+          "operation": "toBinary",
+          "sourceProperty": "base64",
+          "options": {
+            "mimeType": "={{ $json.mimetype }}"
+          }
+        },
+        "type": "n8n-nodes-base.convertToFile",
+        "typeVersion": 1.1,
+        "position": [
+          1792,
+          1056
+        ],
+        "id": "924b768c-6b5f-42c2-a493-927420663c2c",
+        "name": "Convert to File"
+      },
+      {
+        "parameters": {
+          "resource": "audio",
+          "operation": "transcribe",
+          "options": {}
+        },
+        "type": "@n8n/n8n-nodes-langchain.openAi",
+        "typeVersion": 1.8,
+        "position": [
+          2016,
+          1056
+        ],
+        "id": "fdd6bb47-3e1a-4b95-b4d7-794ddf16da5e",
+        "name": "Transcribe Audio"
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "content",
+                "name": "content",
+                "value": "={{ $json.text }}",
+                "type": "string"
+              },
+              {
+                "id": "timestamp",
+                "name": "timestamp",
+                "value": "={{ $('Parse JSON').item.json.message?.timestamp }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          2224,
+          1056
+        ],
+        "id": "b8ef1ffd-0bbd-4c9e-be85-b2d7d114ae73",
+        "name": "Format Audio Content"
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "content",
+                "name": "content",
+                "value": "={{ $json.message?.content }}",
+                "type": "string"
+              },
+              {
+                "id": "timestamp",
+                "name": "timestamp",
+                "value": "={{ $json.message?.timestamp }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          1904,
+          1248
+        ],
+        "id": "5b6dace9-b9cb-4400-8ad8-c46c474f98cd",
+        "name": "Format Text Content"
+      },
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          1552,
+          1456
+        ],
+        "id": "001c62b4-9bfe-400e-ba7e-9f98c6d84a09",
+        "name": "Other Content (Skip)"
+      },
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 3.1,
+        "position": [
+          2432,
+          1232
+        ],
+        "id": "31bcbda8-5c02-4e95-8420-afc80eb5cf25",
+        "name": "Merge Content"
+      },
+      {
+        "parameters": {
+          "sortFieldsUi": {
+            "sortField": [
+              {
+                "fieldName": "timestamp"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.sort",
+        "typeVersion": 1,
+        "position": [
+          2672,
+          1232
+        ],
+        "id": "f448d96f-f1af-4a9f-889c-2e03def00e0a",
+        "name": "Sort by Time"
+      },
+      {
+        "parameters": {
+          "fieldsToAggregate": {
+            "fieldToAggregate": [
+              {
+                "fieldToAggregate": "content",
+                "renameField": true,
+                "outputFieldName": "messages"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.aggregate",
+        "typeVersion": 1,
+        "position": [
+          2896,
+          1232
+        ],
+        "id": "a739ed82-d66e-465c-a4dc-9ca1274b8173",
+        "name": "Aggregate Messages"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// PREPARE FOR AI PROCESSING\n// Combines messages and extracts lead info\n// ============================================================\n\nconst messages = $input.first().json.messages || [];\nconst normalizedData = $('Normalize Message').first().json;\n\n// Combine all messages\nconst fullMessage = Array.isArray(messages) ? messages.join('\\n') : String(messages);\n\n// Extract email if present\nconst emailMatch = fullMessage.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);\nconst email = emailMatch ? emailMatch[0] : null;\n\n// Extract name if mentioned\nlet name = normalizedData.user?.name || null;\nconst nameMatch = fullMessage.match(/(?:me llamo|soy|mi nombre es)\\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\\s]{2,40})/i);\nif (nameMatch) name = nameMatch[1].trim();\n\nreturn {\n  phone: normalizedData.message?.phone,\n  message: fullMessage,\n  instance: normalizedData.instance,\n  user: {\n    phone: normalizedData.message?.phone,\n    name: name,\n    email: email\n  },\n  source: 'whatsapp',\n  channel: 'evolution'\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3104,
+          1232
+        ],
+        "id": "86302fe7-88bc-4c46-8377-95d0a1fee5f5",
+        "name": "Prepare for Processing"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// BUILD CLIENT CONTEXT FOR AI\n// ============================================================\n\nconst lead = $input.first().json;\nconst msgData = $('Prepare for Processing').first().json;\n\nlet context = `📞 Teléfono: ${lead.phone}`;\nif (lead.name) context += `\\n👤 Nombre: ${lead.name}`;\nif (lead.email) context += `\\n📧 Email: ${lead.email}`;\nif (lead.temperature && lead.temperature !== 'cold') context += `\\n🌡️ Temperatura: ${lead.temperature}`;\nif (lead.score) context += `\\n📊 Score: ${lead.score}`;\nif (lead.intent) context += `\\n🎯 Interés: ${lead.intent}`;\nif (lead.preferred_zones?.length) context += `\\n📍 Zonas: ${lead.preferred_zones.join(', ')}`;\nif (lead.budget_max) context += `\\n💰 Presupuesto: ${lead.budget_max}`;\n\nreturn {\n  ...msgData,\n  lead_id: lead.id,\n  lead_crm_id: lead.crm_id,\n  client_context: context,\n  client: lead\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3552,
+          1232
+        ],
+        "id": "6d8bcc57-205c-47b3-af83-03b339e1a609",
+        "name": "Build Client Context"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// PARSE PROPERTY FILTERS FROM MESSAGE\n// ============================================================\n\nconst data = $input.first().json;\nconst text = (data.message || '').toLowerCase();\n\n// Operation type\nlet operacion = null;\nif (/(alquiler|alquilar|renta|arriendo)/.test(text)) operacion = 'alquiler';\nif (/(venta|comprar|compra)/.test(text)) operacion = 'venta';\n\n// Bedrooms\nlet dormitorios = null;\nconst dormMatch = text.match(/(\\d+)\\s*(?:hab|habitaci[oó]n|habitaciones|dorm|dormitorio|dormitorios|amb|ambientes)/);\nif (dormMatch) dormitorios = Number(dormMatch[1]);\n\n// Max price\nlet precio_max = null;\nconst priceMatch = text.match(/(?:hasta|max|presupuesto|budget)?\\s*(?:usd|us\\$|\\$)?\\s*(\\d+(?:[\\.,]\\d+)?)\\s*([km])?/i);\nif (priceMatch) {\n  let n = Number(priceMatch[1].replace(',', '.'));\n  const suffix = priceMatch[2]?.toLowerCase();\n  if (suffix === 'k') n *= 1000;\n  if (suffix === 'm') n *= 1000000;\n  if (n > 1000) precio_max = Math.round(n);\n}\n\n// Search keywords\nconst searchText = data.message\n  .replace(/\\d+/g, ' ')\n  .replace(/[^a-záéíóúüñ\\s]/gi, ' ')\n  .trim()\n  .substring(0, 100);\n\nreturn {\n  ...data,\n  filters: {\n    operacion,\n    dormitorios,\n    precio_max,\n    searchText\n  }\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3776,
+          1232
+        ],
+        "id": "616182ba-9e5f-4b27-b22e-b3611eb3c39a",
+        "name": "Parse Property Filters"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "-- Search properties\nSELECT \n  crm_id, titulo, ciudad, barrio,\n  precio, moneda, dormitorios, banos,\n  m2_cubiertos as m2, external_url as url,\n  tipo, operacion\nFROM properties\nWHERE estado = 'disponible'\n  AND ($1::text IS NULL OR operacion = $1)\n  AND ($2::numeric IS NULL OR precio <= $2)\n  AND ($3::int IS NULL OR dormitorios >= $3)\n  AND (\n    $4::text IS NULL OR $4 = ''\n    OR lower(titulo) LIKE '%' || lower($4) || '%'\n    OR lower(descripcion) LIKE '%' || lower($4) || '%'\n    OR lower(barrio) LIKE '%' || lower($4) || '%'\n    OR lower(ciudad) LIKE '%' || lower($4) || '%'\n  )\nORDER BY destacado DESC, updated_at DESC\nLIMIT 5;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          3984,
+          1232
+        ],
+        "id": "60ce57e5-cc1c-4f9a-9520-6a146990974e",
+        "name": "DB - Search Properties"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ============================================================\n// BUILD PROPERTY CONTEXT FOR AI\n// ============================================================\n\nconst properties = $input.all().map(i => i.json);\nconst prevData = $('Parse Property Filters').first().json;\n\nif (!properties.length || !properties[0].crm_id) {\n  return {\n    ...prevData,\n    property_context: '📭 No se encontraron inmuebles que coincidan. Pide más detalles al cliente.',\n    properties: []\n  };\n}\n\nconst lines = properties.map((p, idx) => {\n  const price = p.precio \n    ? `${p.moneda || 'USD'} ${p.precio.toLocaleString()}`\n    : 'Consultar';\n  const loc = [p.barrio, p.ciudad].filter(Boolean).join(', ');\n  const feats = [\n    p.dormitorios ? `${p.dormitorios} hab` : null,\n    p.banos ? `${p.banos} baños` : null,\n    p.m2 ? `${p.m2} m²` : null\n  ].filter(Boolean).join(' · ');\n  \n  let line = `${idx + 1}. **${p.titulo || 'Inmueble'}**`;\n  if (loc) line += ` - ${loc}`;\n  line += `\\n   💰 ${price}`;\n  if (feats) line += ` | ${feats}`;\n  if (p.url) line += `\\n   🔗 ${p.url}`;\n  \n  return line;\n});\n\nreturn {\n  ...prevData,\n  property_context: lines.join('\\n\\n'),\n  properties: properties\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          4208,
+          1232
+        ],
+        "id": "c51970f3-c0b2-4852-a9a3-c16be282e263",
+        "name": "Build Property Context"
+      },
+      {
+        "parameters": {
+          "promptType": "define",
+          "text": "=📋 CLIENTE:\n{{ $json.client_context }}\n\n🏠 INMUEBLES DISPONIBLES:\n{{ $json.property_context }}\n\n💬 MENSAJE:\n{{ $json.message }}",
+          "options": {
+            "systemMessage": "=Eres un asistente de WhatsApp para una **inmobiliaria**.\n\n## REGLAS:\n\n1. **NO INVENTES inmuebles**. Solo recomienda los que aparecen en \"INMUEBLES DISPONIBLES\".\n\n2. Si no hay inmuebles, pide:\n   - Zona/ciudad\n   - Presupuesto\n   - Operación (venta/alquiler)\n   - Habitaciones\n\n3. Al recomendar, incluye:\n   - Ubicación\n   - Precio\n   - Características\n   - Link\n\n4. Si es cliente nuevo sin email, pídelo amablemente.\n\n## ESTILO:\n- Profesional y cercano\n- Respuestas breves (max 3 párrafos)\n- Usa emojis con moderación\n- Español\n\nFecha: {{ $now }}"
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.agent",
+        "typeVersion": 1.9,
+        "position": [
+          4464,
+          1232
+        ],
+        "id": "8f805c8b-dd7c-4e26-8922-726f793de9cd",
+        "name": "AI Agent"
+      },
+      {
+        "parameters": {
+          "model": {
+            "__rl": true,
+            "mode": "list",
+            "value": "gpt-4o-mini"
+          },
+          "options": {}
+        },
+        "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+        "typeVersion": 1.2,
+        "position": [
+          4416,
+          1456
+        ],
+        "id": "58e7fa6d-2d6f-45fb-9c8a-6fca75409ba4",
+        "name": "OpenAI GPT-4o-mini"
+      },
+      {
+        "parameters": {
+          "sessionIdType": "customKey",
+          "sessionKey": "={{ $('Prepare for Processing').first().json.phone }}"
+        },
+        "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+        "typeVersion": 1.3,
+        "position": [
+          4560,
+          1456
+        ],
+        "id": "35944c89-a7d8-4902-8de3-5862fffa3f16",
+        "name": "Postgres Chat Memory"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "-- Log WhatsApp interaction\nINSERT INTO interactions (\n  lead_id, phone, channel, direction,\n  message_content, ai_response,\n  intent_detected, extracted_data\n)\nVALUES (\n  $1, $2, 'whatsapp', 'inbound',\n  $3, $4, $5, $6::jsonb\n)\nRETURNING id;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          4768,
+          1232
+        ],
+        "id": "caad70ef-69ca-4643-9559-4166089cdc22",
+        "name": "DB - Log Interaction"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare for Processing').first().json.instance?.server_url }}/message/sendText/{{ $('Prepare for Processing').first().json.instance?.instance_name }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "apikey",
+                "value": "={{ $('Prepare for Processing').first().json.instance?.apikey }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "number",
+                "value": "={{ $('Normalize Message').first().json.message?.raw_jid }}"
+              },
+              {
+                "name": "text",
+                "value": "={{ $('AI Agent').first().json.output }}"
+              },
+              {
+                "name": "delay",
+                "value": "={{ Number(1500) }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          4960,
+          1232
+        ],
+        "id": "4ca69129-ca1f-4887-b018-34661f505534",
+        "name": "Send WhatsApp Response"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $('Build Client Context').first().json.lead_crm_id }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "string",
+                  "operation": "notExists"
+                },
+                "id": "no-crm-id"
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.filter",
+        "typeVersion": 2.2,
+        "position": [
+          5168,
+          1232
+        ],
+        "id": "e5a7ad64-bcf8-497f-b8ef-f8d6fe45aa1a",
+        "name": "Needs CRM Sync?"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://services.leadconnectorhq.com/contacts/",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $env.GHL_API_KEY }}"
+              },
+              {
+                "name": "Version",
+                "value": "2021-07-28"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"locationId\": \"{{ $env.GHL_LOCATION_ID }}\",\n  \"firstName\": \"{{ $('DB - Upsert Lead1').first().json.name?.split(' ')[0] || '' }}\",\n  \"lastName\": \"{{ $('DB - Upsert Lead1').first().json.name?.split(' ').slice(1).join(' ') || '' }}\",\n  \"phone\": \"{{ $('Prepare for Processing').first().json.phone }}\",\n  \"email\": \"{{ $('DB - Upsert Lead1').first().json.email || '' }}\",\n  \"source\": \"WhatsApp AI Agent\",\n  \"tags\": [\"source:whatsapp\", \"channel:evolution\"]\n}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          5392,
+          1232
+        ],
+        "id": "6dbd0880-4235-4c10-a292-96a2162826ff",
+        "name": "GHL - Create Contact"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "UPDATE leads SET crm_synced = TRUE, crm_id = $2, crm_sync_at = NOW() WHERE id = $1;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          5616,
+          1232
+        ],
+        "id": "ee2198ea-b284-48c5-8bb9-ac2d0d9cb1ed",
+        "name": "DB - Update CRM ID"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "-- Upsert lead from WhatsApp\nINSERT INTO leads (\n  phone, name, email, source, first_channel,\n  total_interactions, last_interaction_at, first_seen_at\n)\nVALUES (\n  $1, $2, $3, 'whatsapp', 'evolution',\n  1, NOW(), NOW()\n)\nON CONFLICT (phone) DO UPDATE SET\n  name = COALESCE(EXCLUDED.name, leads.name),\n  email = COALESCE(EXCLUDED.email, leads.email),\n  total_interactions = leads.total_interactions + 1,\n  last_interaction_at = NOW(),\n  updated_at = NOW()\nRETURNING id, phone, name, email, temperature, score, intent, preferred_zones, budget_max, crm_id;",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          3328,
+          1232
+        ],
+        "id": "f98ca62a-0b12-48bc-a42a-16c81a06c1d4",
+        "name": "DB - Upsert Lead1"
+      }
+    ],
+    "pinData": {},
+    "connections": {
+      "Retell Webhook": {
+        "main": [
+          [
+            {
+              "node": "Event Router",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Respond OK",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Event Router": {
+        "main": [
+          [
+            {
+              "node": "Normalize Data",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Started (No Action)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Other Events (Log Only)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Normalize Data": {
+        "main": [
+          [
+            {
+              "node": "Score Lead",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Score Lead": {
+        "main": [
+          [
+            {
+              "node": "DB - Log Call",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "DB - Log Call": {
+        "main": [
+          [
+            {
+              "node": "DB - Upsert Lead",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "DB - Upsert Lead": {
+        "main": [
+          [
+            {
+              "node": "Prepare CRM Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare CRM Payload": {
+        "main": [
+          [
+            {
+              "node": "Route by Classification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Route by Classification": {
+        "main": [
+          [
+            {
+              "node": "GHL - Create/Update Contact (Hot)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "GHL - Create/Update Contact (Warm)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "GHL - Create/Update Contact (Cold)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GHL - Create/Update Contact (Hot)": {
+        "main": [
+          [
+            {
+              "node": "GHL - Add Note (Hot)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GHL - Add Note (Hot)": {
+        "main": [
+          [
+            {
+              "node": "GHL - Create Urgent Task (Hot)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GHL - Create Urgent Task (Hot)": {
+        "main": [
+          [
+            {
+              "node": "Merge CRM Results",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GHL - Create/Update Contact (Warm)": {
+        "main": [
+          [
+            {
+              "node": "GHL - Add Note (Warm)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GHL - Add Note (Warm)": {
+        "main": [
+          [
+            {
+              "node": "Merge CRM Results",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "GHL - Create/Update Contact (Cold)": {
+        "main": [
+          [
+            {
+              "node": "GHL - Add Note (Cold)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge CRM Results": {
+        "main": [
+          [
+            {
+              "node": "DB - Update CRM Sync",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "WhatsApp Webhook": {
+        "main": [
+          [
+            {
+              "node": "Incoming Messages Only",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Incoming Messages Only": {
+        "main": [
+          [
+            {
+              "node": "Normalize Message",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Normalize Message": {
+        "main": [
+          [
+            {
+              "node": "Push to Buffer",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Push to Buffer": {
+        "main": [
+          [
+            {
+              "node": "Get Buffer",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get Buffer": {
+        "main": [
+          [
+            {
+              "node": "Debounce Check",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Debounce Check": {
+        "main": [
+          [
+            {
+              "node": "Discard (Duplicate)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Clear Buffer",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Wait 2s",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Wait 2s": {
+        "main": [
+          [
+            {
+              "node": "Get Buffer",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Clear Buffer": {
+        "main": [
+          [
+            {
+              "node": "Split Messages",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Split Messages": {
+        "main": [
+          [
+            {
+              "node": "Parse JSON",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse JSON": {
+        "main": [
+          [
+            {
+              "node": "Content Type?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Content Type?": {
+        "main": [
+          [
+            {
+              "node": "Get Audio File",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Format Text Content",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Other Content (Skip)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get Audio File": {
+        "main": [
+          [
+            {
+              "node": "Convert to File",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Convert to File": {
+        "main": [
+          [
+            {
+              "node": "Transcribe Audio",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Transcribe Audio": {
+        "main": [
+          [
+            {
+              "node": "Format Audio Content",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Audio Content": {
+        "main": [
+          [
+            {
+              "node": "Merge Content",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Text Content": {
+        "main": [
+          [
+            {
+              "node": "Merge Content",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge Content": {
+        "main": [
+          [
+            {
+              "node": "Sort by Time",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Sort by Time": {
+        "main": [
+          [
+            {
+              "node": "Aggregate Messages",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Aggregate Messages": {
+        "main": [
+          [
+            {
+              "node": "Prepare for Processing",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare for Processing": {
+        "main": [
+          [
+            {
+              "node": "DB - Upsert Lead1",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Client Context": {
+        "main": [
+          [
+            {
+              "node": "Parse Property Filters",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Property Filters": {
+        "main": [
+          [
+            {
+              "node": "DB - Search Properties",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "DB - Search Properties": {
+        "main": [
+          [
+            {
+              "node": "Build Property Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Property Context": {
+        "main": [
+          [
+            {
+              "node": "AI Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "OpenAI GPT-4o-mini": {
+        "ai_languageModel": [
+          [
+            {
+              "node": "AI Agent",
+              "type": "ai_languageModel",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Postgres Chat Memory": {
+        "ai_memory": [
+          [
+            {
+              "node": "AI Agent",
+              "type": "ai_memory",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "AI Agent": {
+        "main": [
+          [
+            {
+              "node": "DB - Log Interaction",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "DB - Log Interaction": {
+        "main": [
+          [
+            {
+              "node": "Send WhatsApp Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send WhatsApp Response": {
+        "main": [
+          [
+            {
+              "node": "Needs CRM Sync?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Needs CRM Sync?": {
+        "main": [
+          [
+            {
+              "node": "GHL - Create Contact",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GHL - Create Contact": {
+        "main": [
+          [
+            {
+              "node": "DB - Update CRM ID",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "DB - Upsert Lead1": {
+        "main": [
+          [
+            {
+              "node": "Build Client Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "active": false,
+    "settings": {
+      "executionOrder": "v1",
+      "availableInMCP": false
+    },
+    "versionId": "65df49b8-9ba5-4fba-b72c-93451d994b9f",
+    "meta": {
+      "templateCredsSetupCompleted": true,
+      "instanceId": "9d980638968c03db0ff6d6db4aaeca9a4d8c52613fe2f0d8f512c02562c54340"
+    },
+    "id": "1g3lcbs7n88fRJh3FTCh7",
+    "tags": [
+      {
+        "updatedAt": "2026-01-13T01:55:32.293Z",
+        "createdAt": "2026-01-13T01:55:32.293Z",
+        "id": "HMyLIJNHr0kzH3Gd",
+        "name": "ai-agent"
+      },
+      {
+        "updatedAt": "2026-01-13T01:52:05.685Z",
+        "createdAt": "2026-01-13T01:52:05.685Z",
+        "id": "N6IHBEINRbZo3t63",
+        "name": "inbound"
+      },
+      {
+        "updatedAt": "2026-01-13T01:55:32.377Z",
+        "createdAt": "2026-01-13T01:55:32.377Z",
+        "id": "TgSRfG3AYPN4GYmS",
+        "name": "whatsapp"
+      },
+      {
+        "updatedAt": "2026-01-13T01:55:32.336Z",
+        "createdAt": "2026-01-13T01:55:32.336Z",
+        "id": "ckwiwEndh6SLDuo0",
+        "name": "inmobiliaria"
+      },
+      {
+        "updatedAt": "2026-01-13T01:52:05.660Z",
+        "createdAt": "2026-01-13T01:52:05.660Z",
+        "id": "n0uBFKtJFLljHfs6",
+        "name": "call-center"
+      },
+      {
+        "updatedAt": "2026-01-13T01:52:05.626Z",
+        "createdAt": "2026-01-13T01:52:05.626Z",
+        "id": "qAh5FcRGQJz9rxUT",
+        "name": "retell"
+      }
+    ]
+  }
