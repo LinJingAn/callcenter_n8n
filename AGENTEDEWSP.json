@@ -3,22 +3,18 @@
     "nodes": [
       {
         "parameters": {
-          "operation": "upsert"
+          "operation": "executeQuery",
+          "query": "INSERT INTO leads (phone, name, email, source, first_channel, total_interactions, first_seen_at, last_interaction_at)\nVALUES (\n  '{{ $json.phone }}',\n  '{{ ($json.user?.name || \"\").replace(/'/g, \"''\") }}',\n  '{{ $json.user?.email || \"\" }}',\n  'whatsapp',\n  'evolution',\n  1,\n  NOW(),\n  NOW()\n)\nON CONFLICT (phone) DO UPDATE SET\n  name = COALESCE(NULLIF(EXCLUDED.name, ''), leads.name),\n  email = COALESCE(NULLIF(EXCLUDED.email, ''), leads.email),\n  total_interactions = leads.total_interactions + 1,\n  last_interaction_at = NOW(),\n  updated_at = NOW()\nRETURNING id, phone, name, email, temperature, score, intent, preferred_zones, budget_max, crm_id;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           10528,
           10944
         ],
         "id": "6048a6e3-002f-46d9-bf40-11c240c4a843",
-        "name": "DB - Upsert Lead (WhatsApp)1",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Upsert Lead (WhatsApp)1"
       },
       {
         "parameters": {
@@ -74,41 +70,18 @@
       },
       {
         "parameters": {
-          "operation": "update",
-          "tableId": "leads",
-          "filterType": "string",
-          "filterString": "id=eq.{{ $json.lead_id }}",
-          "fieldsUi": {
-            "fieldValues": [
-              {
-                "fieldId": "crm_synced",
-                "fieldValue": true
-              },
-              {
-                "fieldId": "crm_id",
-                "fieldValue": "={{ $json.crm_contact_id }}"
-              },
-              {
-                "fieldId": "crm_sync_at",
-                "fieldValue": "={{ new Date().toISOString() }}"
-              }
-            ]
-          }
+          "operation": "executeQuery",
+          "query": "UPDATE leads\nSET crm_synced = TRUE,\n    crm_id = '{{ $json.crm_contact_id }}',\n    crm_sync_at = NOW(),\n    updated_at = NOW()\nWHERE id = {{ $json.lead_id }}\nRETURNING id;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           12816,
           10944
         ],
         "id": "2cffa0c4-5bc7-44b6-9191-9cc02ea945cb",
-        "name": "DB - Update CRM ID",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Update CRM ID"
       },
       {
         "parameters": {
@@ -227,58 +200,18 @@
       },
       {
         "parameters": {
-          "tableId": "interactions",
-          "fieldsUi": {
-            "fieldValues": [
-              {
-                "fieldId": "lead_id",
-                "fieldValue": "={{ $json.lead_id }}"
-              },
-              {
-                "fieldId": "phone",
-                "fieldValue": "={{ $json.phone }}"
-              },
-              {
-                "fieldId": "channel",
-                "fieldValue": "whatsapp"
-              },
-              {
-                "fieldId": "direction",
-                "fieldValue": "inbound"
-              },
-              {
-                "fieldId": "message_content",
-                "fieldValue": "={{ $json.message }}"
-              },
-              {
-                "fieldId": "ai_response",
-                "fieldValue": "={{ $json.ai_response }}"
-              },
-              {
-                "fieldId": "intent_detected",
-                "fieldValue": "={{ $json.intent }}"
-              },
-              {
-                "fieldId": "extracted_data",
-                "fieldValue": "={{ JSON.stringify($json.extracted_data || {}) }}"
-              }
-            ]
-          }
+          "operation": "executeQuery",
+          "query": "INSERT INTO interactions (lead_id, phone, channel, direction, message_content, ai_response, intent_detected, extracted_data)\nVALUES (\n  {{ $json.lead_id }},\n  '{{ $json.phone }}',\n  'whatsapp',\n  'inbound',\n  '{{ ($json.message || \"\").replace(/'/g, \"''\") }}',\n  '{{ ($json.ai_response || \"\").replace(/'/g, \"''\") }}',\n  '{{ $json.intent || \"\" }}',\n  '{{ JSON.stringify($json.extracted_data || {}) }}'\n)\nRETURNING id;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           11968,
           10944
         ],
         "id": "14c4bcdc-6915-41de-b454-496e82fbb84c",
-        "name": "DB - Log Interaction",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Log Interaction"
       },
       {
         "parameters": {
@@ -344,26 +277,18 @@
       },
       {
         "parameters": {
-          "operation": "getAll",
-          "tableId": "properties",
-          "limit": 5,
-          "filterType": "string",
-          "filterString": "estado=eq.disponible{{ $json.operacion ? '&operacion=eq.' + $json.operacion : '' }}{{ $json.precio_max ? '&precio=lte.' + $json.precio_max : '' }}{{ $json.dormitorios ? '&dormitorios=gte.' + $json.dormitorios : '' }}"
+          "operation": "executeQuery",
+          "query": "SELECT crm_id, titulo, ciudad, barrio, precio, moneda, dormitorios, banos, m2_cubiertos, external_url AS url, tipo, operacion\nFROM properties\nWHERE estado = 'disponible'\n{{ $json.filters?.operacion ? \"  AND operacion = '\" + $json.filters.operacion + \"'\" : '' }}\n{{ $json.filters?.precio_max ? '  AND precio <= ' + $json.filters.precio_max : '' }}\n{{ $json.filters?.dormitorios ? '  AND dormitorios >= ' + $json.filters.dormitorios : '' }}\nORDER BY destacado DESC, updated_at DESC\nLIMIT 5;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           11184,
           10944
         ],
         "id": "b85e25cc-ff8d-4c33-b158-f1059bffc002",
-        "name": "DB - Search Properties",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Search Properties"
       },
       {
         "parameters": {
@@ -883,41 +808,18 @@
       },
       {
         "parameters": {
-          "operation": "update",
-          "tableId": "leads",
-          "filterType": "string",
-          "filterString": "id=eq.{{ $json.lead_id }}",
-          "fieldsUi": {
-            "fieldValues": [
-              {
-                "fieldId": "crm_synced",
-                "fieldValue": true
-              },
-              {
-                "fieldId": "crm_id",
-                "fieldValue": "={{ $json.crm_id }}"
-              },
-              {
-                "fieldId": "crm_sync_at",
-                "fieldValue": "={{ new Date().toISOString() }}"
-              }
-            ]
-          }
+          "operation": "executeQuery",
+          "query": "UPDATE leads\nSET crm_synced = TRUE,\n    crm_id = '{{ $json.crm_id }}',\n    crm_sync_at = NOW(),\n    updated_at = NOW()\nWHERE id = {{ $json.lead_id }}\nRETURNING id;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           9200,
           9744
         ],
         "id": "f6b5f10d-8352-4022-beb5-f564431a88f0",
-        "name": "DB - Update CRM Sync",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Update CRM Sync"
       },
       {
         "parameters": {},
@@ -1276,94 +1178,33 @@
       },
       {
         "parameters": {
-          "operation": "update",
-          "tableId": "properties"
+          "operation": "executeQuery",
+          "query": "INSERT INTO leads (phone, name, email, source, first_channel, temperature, score, intent, total_interactions, first_seen_at, last_interaction_at)\nVALUES (\n  '{{ $json.phone }}',\n  '{{ ($json.name || \"\").replace(/'/g, \"''\") }}',\n  '{{ $json.email || \"\" }}',\n  'call',\n  'retell',\n  '{{ $json.temperature }}',\n  {{ $json.score || 0 }},\n  '{{ $json.intent || \"\" }}',\n  1,\n  NOW(),\n  NOW()\n)\nON CONFLICT (phone) DO UPDATE SET\n  name = COALESCE(NULLIF(EXCLUDED.name, ''), leads.name),\n  email = COALESCE(NULLIF(EXCLUDED.email, ''), leads.email),\n  temperature = CASE WHEN EXCLUDED.score > leads.score THEN EXCLUDED.temperature ELSE leads.temperature END,\n  score = GREATEST(EXCLUDED.score, leads.score),\n  intent = COALESCE(NULLIF(EXCLUDED.intent, ''), leads.intent),\n  total_interactions = leads.total_interactions + 1,\n  last_interaction_at = NOW(),\n  updated_at = NOW()\nRETURNING id, phone, name, email, temperature, score, crm_synced, crm_id;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           7776,
           9760
         ],
         "id": "cee8ca0a-510f-40fa-875c-f082c835e095",
-        "name": "DB - Upsert Lead",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Upsert Lead"
       },
       {
         "parameters": {
-          "tableId": "interactions",
-          "fieldsUi": {
-            "fieldValues": [
-              {
-                "fieldId": "phone",
-                "fieldValue": "={{ $json.phone }}"
-              },
-              {
-                "fieldId": "channel",
-                "fieldValue": "retell"
-              },
-              {
-                "fieldId": "direction",
-                "fieldValue": "inbound"
-              },
-              {
-                "fieldId": "transcript",
-                "fieldValue": "={{ $json.transcript }}"
-              },
-              {
-                "fieldId": "summary",
-                "fieldValue": "={{ $json.summary }}"
-              },
-              {
-                "fieldId": "recording_url",
-                "fieldValue": "={{ $json.recording_url }}"
-              },
-              {
-                "fieldId": "call_duration_seconds",
-                "fieldValue": "={{ $json.call_duration_seconds }}"
-              },
-              {
-                "fieldId": "call_status",
-                "fieldValue": "={{ $json.call_status }}"
-              },
-              {
-                "fieldId": "intent_detected",
-                "fieldValue": "={{ $json.intent }}"
-              },
-              {
-                "fieldId": "temperature_at_interaction",
-                "fieldValue": "={{ $json.temperature }}"
-              },
-              {
-                "fieldId": "confidence_score",
-                "fieldValue": "={{ $json.confidence_score }}"
-              },
-              {
-                "fieldId": "extracted_data",
-                "fieldValue": "={{ JSON.stringify($json.extracted_data) }}"
-              }
-            ]
-          }
+          "operation": "executeQuery",
+          "query": "INSERT INTO interactions (phone, channel, direction, transcript, summary, recording_url, call_duration_seconds, call_status, intent_detected, temperature_at_interaction, confidence_score, extracted_data)\nVALUES (\n  '{{ $json.phone }}',\n  'retell',\n  'inbound',\n  '{{ ($json.transcript || \"\").replace(/'/g, \"''\") }}',\n  '{{ ($json.summary || \"\").replace(/'/g, \"''\") }}',\n  '{{ $json.recording_url || \"\" }}',\n  {{ $json.call_duration || 0 }},\n  '{{ $json.call_status || \"completed\" }}',\n  '{{ $json.intent || \"\" }}',\n  '{{ $json.temperature || \"cold\" }}',\n  {{ $json.ai_confidence || 0 }},\n  '{{ JSON.stringify($json._raw || {}) }}'\n)\nRETURNING id;",
+          "options": {}
         },
-        "type": "n8n-nodes-base.supabase",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
         "position": [
           7568,
           9760
         ],
         "id": "8e89c972-8584-4004-8150-36e0969de4ae",
-        "name": "DB - Log Call",
-        "credentials": {
-          "supabaseApi": {
-            "id": "IvsQPdpHrkfwrlzr",
-            "name": "Supabase account"
-          }
-        }
+        "name": "DB - Log Call"
       },
       {
         "parameters": {
